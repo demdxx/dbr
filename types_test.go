@@ -1,96 +1,103 @@
 package dbr
 
 import (
-	"database/sql"
 	"encoding/json"
 	"testing"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
+	"github.com/gocraft/dbr/dialect"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNullTypeScanning(t *testing.T) {
-	s := createRealSessionWithFixtures()
-
-	type nullTypeScanningTest struct {
-		record *nullTypedRecord
-		valid  bool
+var (
+	filledRecord = nullTypedRecord{
+		StringVal:  NewNullString("wow"),
+		Int64Val:   NewNullInt64(42),
+		Float64Val: NewNullFloat64(1.618),
+		TimeVal:    NewNullTime(time.Date(2009, 1, 3, 18, 15, 5, 0, time.UTC)),
+		BoolVal:    NewNullBool(true),
 	}
+)
 
-	tests := []nullTypeScanningTest{
-		nullTypeScanningTest{
-			record: &nullTypedRecord{},
-			valid:  false,
+func TestNullTypesScanning(t *testing.T) {
+	for _, test := range []struct {
+		in nullTypedRecord
+	}{
+		{},
+		{
+			in: filledRecord,
 		},
-		nullTypeScanningTest{
-			record: newNullTypedRecordWithData(),
-			valid:  true,
-		},
-	}
+	} {
+		for _, sess := range testSession {
+			test.in.Id = nextID()
+			_, err := sess.InsertInto("null_types").Columns("id", "string_val", "int64_val", "float64_val", "time_val", "bool_val").Record(test.in).Exec()
+			assert.NoError(t, err)
 
-	for _, test := range tests {
-		// Create the record in the db
-		res, err := s.InsertInto("null_types").Columns("string_val", "int64_val", "float64_val", "time_val", "bool_val").Record(test.record).Exec()
-		assert.NoError(t, err)
-		id, err := res.LastInsertId()
-		assert.NoError(t, err)
-
-		// Scan it back and check that all fields are of the correct validity and are
-		// equal to the reference record
-		nullTypeSet := &nullTypedRecord{}
-		err = s.Select("*").From("null_types").Where("id = ?", id).LoadStruct(nullTypeSet)
-		assert.NoError(t, err)
-
-		assert.Equal(t, test.record, nullTypeSet)
-		assert.Equal(t, test.valid, nullTypeSet.StringVal.Valid)
-		assert.Equal(t, test.valid, nullTypeSet.Int64Val.Valid)
-		assert.Equal(t, test.valid, nullTypeSet.Float64Val.Valid)
-		assert.Equal(t, test.valid, nullTypeSet.TimeVal.Valid)
-		assert.Equal(t, test.valid, nullTypeSet.BoolVal.Valid)
-
-		nullTypeSet.StringVal.String = "newStringVal"
-		assert.NotEqual(t, test.record, nullTypeSet)
+			var record nullTypedRecord
+			err = sess.Select("*").From("null_types").Where(Eq("id", test.in.Id)).LoadStruct(&record)
+			assert.NoError(t, err)
+			if sess.Dialect == dialect.PostgreSQL {
+				// TODO: https://github.com/lib/pq/issues/329
+				if !record.TimeVal.Time.IsZero() {
+					record.TimeVal.Time = record.TimeVal.Time.UTC()
+				}
+			}
+			assert.Equal(t, test.in, record)
+		}
 	}
 }
 
-func TestNullTypeJSONMarshal(t *testing.T) {
-	type nullTypeJSONTest struct {
-		record       *nullTypedRecord
-		expectedJSON []byte
-	}
-
-	tests := []nullTypeJSONTest{
-		nullTypeJSONTest{
-			record:       &nullTypedRecord{},
-			expectedJSON: []byte(`{"Id":0,"StringVal":null,"Int64Val":null,"Float64Val":null,"TimeVal":null,"BoolVal":null}`),
+func TestNullTypesJSON(t *testing.T) {
+	for _, test := range []struct {
+		in   interface{}
+		in2  interface{}
+		out  interface{}
+		want string
+	}{
+		{
+			in:   &filledRecord.BoolVal,
+			in2:  filledRecord.BoolVal,
+			out:  new(NullBool),
+			want: "true",
 		},
-		nullTypeJSONTest{
-			record:       newNullTypedRecordWithData(),
-			expectedJSON: []byte(`{"Id":0,"StringVal":"wow","Int64Val":42,"Float64Val":1.618,"TimeVal":"2009-01-03T18:15:05Z","BoolVal":true}`),
+		{
+			in:   &filledRecord.Float64Val,
+			in2:  filledRecord.Float64Val,
+			out:  new(NullFloat64),
+			want: "1.618",
 		},
-	}
-
-	for _, test := range tests {
-		// Marshal the record
-		rawJSON, err := json.Marshal(test.record)
+		{
+			in:   &filledRecord.Int64Val,
+			in2:  filledRecord.Int64Val,
+			out:  new(NullInt64),
+			want: "42",
+		},
+		{
+			in:   &filledRecord.StringVal,
+			in2:  filledRecord.StringVal,
+			out:  new(NullString),
+			want: `"wow"`,
+		},
+		{
+			in:   &filledRecord.TimeVal,
+			in2:  filledRecord.TimeVal,
+			out:  new(NullTime),
+			want: `"2009-01-03T18:15:05Z"`,
+		},
+	} {
+		// marshal ptr
+		b, err := json.Marshal(test.in)
 		assert.NoError(t, err)
-		assert.Equal(t, test.expectedJSON, rawJSON)
+		assert.Equal(t, test.want, string(b))
 
-		// Unmarshal it back
-		newRecord := &nullTypedRecord{}
-		err = json.Unmarshal([]byte(rawJSON), newRecord)
+		// marshal value
+		b, err = json.Marshal(test.in2)
 		assert.NoError(t, err)
-		assert.Equal(t, test.record, newRecord)
-	}
-}
+		assert.Equal(t, test.want, string(b))
 
-func newNullTypedRecordWithData() *nullTypedRecord {
-	return &nullTypedRecord{
-		StringVal:  NullString{sql.NullString{String: "wow", Valid: true}},
-		Int64Val:   NullInt64{sql.NullInt64{Int64: 42, Valid: true}},
-		Float64Val: NullFloat64{sql.NullFloat64{Float64: 1.618, Valid: true}},
-		TimeVal:    NullTime{mysql.NullTime{Time: time.Date(2009, 1, 3, 18, 15, 5, 0, time.UTC), Valid: true}},
-		BoolVal:    NullBool{sql.NullBool{Bool: true, Valid: true}},
+		// unmarshal
+		err = json.Unmarshal(b, test.out)
+		assert.NoError(t, err)
+		assert.Equal(t, test.in, test.out)
 	}
 }

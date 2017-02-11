@@ -1,27 +1,26 @@
 package dbr
 
-import (
-	"database/sql"
-)
+import "database/sql"
 
 // Tx is a transaction for the given Session
 type Tx struct {
-	*Session
+	EventReceiver
+	Dialect Dialect
 	*sql.Tx
 }
 
 // Begin creates a transaction for the given session
 func (sess *Session) Begin() (*Tx, error) {
-	tx, err := sess.cxn.Db.Begin()
+	tx, err := sess.Connection.Begin()
 	if err != nil {
 		return nil, sess.EventErr("dbr.begin.error", err)
-	} else {
-		sess.Event("dbr.begin")
 	}
+	sess.Event("dbr.begin")
 
 	return &Tx{
-		Session: sess,
-		Tx:      tx,
+		EventReceiver: sess,
+		Dialect:       sess.Dialect,
+		Tx:            tx,
 	}, nil
 }
 
@@ -30,9 +29,8 @@ func (tx *Tx) Commit() error {
 	err := tx.Tx.Commit()
 	if err != nil {
 		return tx.EventErr("dbr.commit.error", err)
-	} else {
-		tx.Event("dbr.commit")
 	}
+	tx.Event("dbr.commit")
 	return nil
 }
 
@@ -41,9 +39,8 @@ func (tx *Tx) Rollback() error {
 	err := tx.Tx.Rollback()
 	if err != nil {
 		return tx.EventErr("dbr.rollback", err)
-	} else {
-		tx.Event("dbr.rollback")
 	}
+	tx.Event("dbr.rollback")
 	return nil
 }
 
