@@ -1,15 +1,28 @@
 package dbr
 
-// DeleteStmt builds `DELETE ...`
+import (
+	"context"
+	"database/sql"
+	"strconv"
+)
+
+// DeleteStmt builds `DELETE ...`.
 type DeleteStmt struct {
+	Runner
+	EventReceiver
+	Dialect
+
 	raw
 
-	Table string
+	Table      string
+	WhereCond  []Builder
+	LimitCount int64
 
-	WhereCond []Builder
+	comments Comments
 }
 
-// Build builds `DELETE ...` in dialect
+type DeleteBuilder = DeleteStmt
+
 func (b *DeleteStmt) Build(d Dialect, buf Buffer) error {
 	if b.raw.Query != "" {
 		return b.raw.Build(d, buf)
@@ -17,6 +30,11 @@ func (b *DeleteStmt) Build(d Dialect, buf Buffer) error {
 
 	if b.Table == "" {
 		return ErrTableNotSpecified
+	}
+
+	err := b.comments.Build(d, buf)
+	if err != nil {
+		return err
 	}
 
 	buf.WriteString("DELETE FROM ")
@@ -29,27 +47,70 @@ func (b *DeleteStmt) Build(d Dialect, buf Buffer) error {
 			return err
 		}
 	}
+	if b.LimitCount >= 0 {
+		buf.WriteString(" LIMIT ")
+		buf.WriteString(strconv.FormatInt(b.LimitCount, 10))
+	}
 	return nil
 }
 
-// DeleteFrom creates a DeleteStmt
+// DeleteFrom creates a DeleteStmt.
 func DeleteFrom(table string) *DeleteStmt {
 	return &DeleteStmt{
-		Table: table,
+		Table:      table,
+		LimitCount: -1,
 	}
 }
 
-// DeleteBySql creates a DeleteStmt from raw query
+// DeleteFrom creates a DeleteStmt.
+func (sess *Session) DeleteFrom(table string) *DeleteStmt {
+	b := DeleteFrom(table)
+	b.Runner = sess
+	b.EventReceiver = sess.EventReceiver
+	b.Dialect = sess.Dialect
+	return b
+}
+
+// DeleteFrom creates a DeleteStmt.
+func (tx *Tx) DeleteFrom(table string) *DeleteStmt {
+	b := DeleteFrom(table)
+	b.Runner = tx
+	b.EventReceiver = tx.EventReceiver
+	b.Dialect = tx.Dialect
+	return b
+}
+
+// DeleteBySql creates a DeleteStmt from raw query.
 func DeleteBySql(query string, value ...interface{}) *DeleteStmt {
 	return &DeleteStmt{
 		raw: raw{
 			Query: query,
 			Value: value,
 		},
+		LimitCount: -1,
 	}
 }
 
-// Where adds a where condition
+// DeleteBySql creates a DeleteStmt from raw query.
+func (sess *Session) DeleteBySql(query string, value ...interface{}) *DeleteStmt {
+	b := DeleteBySql(query, value...)
+	b.Runner = sess
+	b.EventReceiver = sess.EventReceiver
+	b.Dialect = sess.Dialect
+	return b
+}
+
+// DeleteBySql creates a DeleteStmt from raw query.
+func (tx *Tx) DeleteBySql(query string, value ...interface{}) *DeleteStmt {
+	b := DeleteBySql(query, value...)
+	b.Runner = tx
+	b.EventReceiver = tx.EventReceiver
+	b.Dialect = tx.Dialect
+	return b
+}
+
+// Where adds a where condition.
+// query can be Builder or string. value is used only if query type is string.
 func (b *DeleteStmt) Where(query interface{}, value ...interface{}) *DeleteStmt {
 	switch query := query.(type) {
 	case string:
@@ -58,4 +119,22 @@ func (b *DeleteStmt) Where(query interface{}, value ...interface{}) *DeleteStmt 
 		b.WhereCond = append(b.WhereCond, query)
 	}
 	return b
+}
+
+func (b *DeleteStmt) Limit(n uint64) *DeleteStmt {
+	b.LimitCount = int64(n)
+	return b
+}
+
+func (b *DeleteStmt) Comment(comment string) *DeleteStmt {
+	b.comments = b.comments.Append(comment)
+	return b
+}
+
+func (b *DeleteStmt) Exec() (sql.Result, error) {
+	return b.ExecContext(context.Background())
+}
+
+func (b *DeleteStmt) ExecContext(ctx context.Context) (sql.Result, error) {
+	return exec(ctx, b.Runner, b.EventReceiver, b, b.Dialect)
 }
